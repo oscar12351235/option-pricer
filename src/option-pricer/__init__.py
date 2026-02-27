@@ -17,6 +17,7 @@ from .features.core import Feature, AsianFeature, BarrierFeature, LookbackFeatur
 
 from .models.base import Model, PathSampler
 from .models.bates import BatesModel
+from .models.gbm_jump import VectorizedJumpGBMSampler
 from .models.numba_heston_qe import NumbaHestonSampler
 from .models.quantlib_heston import HestonModel
 from .models.jumps import Jump, NoJump, LognormalJumps

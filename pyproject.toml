@@ -64,3 +64,11 @@ addopts = [
   "--junitxml=report.xml"
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+omit = [
+  "src/option-pricer/main.py"
+]
+
+[tool.coverage.report]
+fail_under = 80
