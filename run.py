@@ -258,10 +258,7 @@ def main() -> None:
     parser = _make_parser()
     args = parser.parse_args()
     cfg = load_run_config(args.config_dir)
-    overrides = {
-        field.name: getattr(args, field.name, None)
-        for field in fields(RunConfig)
-    }
+    overrides = {field.name: getattr(args, field.name, None) for field in fields(RunConfig)}
     cfg = apply_overrides(cfg, overrides)
 
     started = time.perf_counter()

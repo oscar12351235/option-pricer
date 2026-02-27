@@ -1,5 +1,6 @@
 import numpy as np
 import QuantLib as ql
+
 from .base import Model
 
 
@@ -43,8 +44,7 @@ class HestonModel(Model):
             for i in range(n_paths):
                 path = pg.next().value()
                 spot_path = path[0]
-                for j in range(len(t_grid)):
-                    s[i, j] = spot_path[j]
+                s[i, :] = np.fromiter((spot_path[j] for j in range(len(t_grid))), dtype=float)
             return s
 
         return sampler

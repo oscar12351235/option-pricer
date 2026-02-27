@@ -10,7 +10,15 @@ from .config import MonteCarloConfig
 from .exercise import American, European, Exercise
 from .features.core import AsianFeature, BarrierFeature, Feature, LookbackFeature
 from .models.base import Model
-from .payoffs.core import Payoff
+from .payoffs.core import (
+    AsianFloatingVanilla,
+    Digital,
+    KnockInAllN,
+    KnockInKnockOut,
+    KnockOutAnyN,
+    Payoff,
+    Vanilla,
+)
 
 
 def payoff_feature_key(payoff: Payoff, features: Sequence[Feature]) -> None:
@@ -122,13 +130,19 @@ class MonteCarloEngine:
         paths = self._simulate_paths(randnumber_key="european")
         df_t = self._discount_grid[-1]
 
-        discounted_payoffs = np.empty(self.n_paths, dtype=float)
-        for i in range(self.n_paths):
-            path = paths[i, :]
-            state: dict[str, Any] = {"t_grid": self.timegrid, "terminal": float(path[-1])}
-            for feat in self.features:
-                feat.apply(path, state)
-            discounted_payoffs[i] = df_t * float(self.payoff(state))
+        vector_keys = self._build_vectorized_key_arrays(paths)
+        if vector_keys is not None and self._is_vectorized_payoff(self.payoff):
+            discounted_payoffs = df_t * self._evaluate_payoff_vectorized(
+                self.payoff, vector_keys, t_idx=-1
+            )
+        else:
+            discounted_payoffs = np.empty(self.n_paths, dtype=float)
+            for i in range(self.n_paths):
+                path = paths[i, :]
+                state: dict[str, Any] = {"t_grid": self.timegrid, "terminal": float(path[-1])}
+                for feat in self.features:
+                    feat.apply(path, state)
+                discounted_payoffs[i] = df_t * float(self.payoff(state))
 
         price = float(np.mean(discounted_payoffs))
         stderr = float(np.std(discounted_payoffs, ddof=1) / math.sqrt(self.n_paths))
@@ -219,6 +233,134 @@ class MonteCarloEngine:
 
         return cache
 
+    def _build_vectorized_key_arrays(self, paths: np.ndarray) -> dict[str, np.ndarray] | None:
+        """
+        Build (n_paths, n_times) arrays for payoff-required keys.
+
+        Returns None if the feature set/payoff cannot be represented with built-in vectorized
+        primitives, in which case pricing falls back to generic per-path state construction.
+        """
+        required_keys = set(self.payoff.requires) | {"terminal"}
+        key_arrays: dict[str, np.ndarray] = {"terminal": paths}
+        n_times = paths.shape[1]
+
+        if "average" in required_keys:
+            if not any(isinstance(f, AsianFeature) for f in self.features):
+                return None
+            cumsum = np.cumsum(paths, axis=1)
+            key_arrays["average"] = cumsum / np.arange(1, n_times + 1, dtype=float)
+
+        if "max" in required_keys:
+            has_max = any(
+                isinstance(f, LookbackFeature) and f.mode in ("max", "both")
+                for f in self.features
+            )
+            if not has_max:
+                return None
+            key_arrays["max"] = np.maximum.accumulate(paths, axis=1)
+
+        if "min" in required_keys:
+            has_min = any(
+                isinstance(f, LookbackFeature) and f.mode in ("min", "both")
+                for f in self.features
+            )
+            if not has_min:
+                return None
+            key_arrays["min"] = np.minimum.accumulate(paths, axis=1)
+
+        for feat in self.features:
+            if isinstance(feat, BarrierFeature):
+                flag_key = f"{feat.name}_flag"
+                time_key = f"{feat.name}_time"
+                need_flag = flag_key in required_keys
+                need_time = time_key in required_keys
+                if not need_flag and not need_time:
+                    continue
+
+                level = float(feat.level)
+                if feat.direction == "up":
+                    cond = paths > level if feat.strict else paths >= level
+                else:
+                    cond = paths < level if feat.strict else paths <= level
+
+                if need_flag:
+                    key_arrays[flag_key] = np.logical_or.accumulate(cond, axis=1)
+
+                if need_time:
+                    idx_time = np.where(cond, np.arange(n_times)[None, :], n_times)
+                    first_hit_idx = idx_time.min(axis=1)
+                    first_hit_idx[first_hit_idx == n_times] = -1
+
+                    idx_matrix = np.arange(n_times, dtype=int)[None, :]
+                    hit = first_hit_idx >= 0
+                    first_hit_clip = np.clip(first_hit_idx, 0, n_times - 1)
+                    first_hit_val = self.timegrid[first_hit_clip][:, None]
+                    active = hit[:, None] & (idx_matrix >= first_hit_idx[:, None])
+                    key_arrays[time_key] = np.where(active, first_hit_val, np.inf)
+            elif not isinstance(feat, (AsianFeature, LookbackFeature)):
+                return None
+
+        return key_arrays if required_keys.issubset(key_arrays.keys()) else None
+
+    @staticmethod
+    def _is_vectorized_payoff(payoff: Payoff) -> bool:
+        if isinstance(payoff, (Vanilla, Digital, AsianFloatingVanilla)):
+            return True
+        if isinstance(payoff, (KnockOutAnyN, KnockInAllN, KnockInKnockOut)):
+            return MonteCarloEngine._is_vectorized_payoff(payoff.inner)
+        return False
+
+    def _evaluate_payoff_vectorized(
+        self, payoff: Payoff, key_arrays: dict[str, np.ndarray], t_idx: int
+    ) -> np.ndarray:
+        if t_idx < 0:
+            t_idx = key_arrays["terminal"].shape[1] + t_idx
+
+        if isinstance(payoff, Vanilla):
+            x = key_arrays[payoff.key][:, t_idx]
+            if payoff.side == "call":
+                return np.maximum(x - payoff.k, 0.0)
+            return np.maximum(payoff.k - x, 0.0)
+
+        if isinstance(payoff, Digital):
+            x = key_arrays[payoff.key][:, t_idx]
+            if payoff.side == "call":
+                in_the_money = x > payoff.k
+            else:
+                in_the_money = x < payoff.k
+            if payoff.variant == "cash":
+                return np.where(in_the_money, payoff.cash, 0.0)
+            return np.where(in_the_money, x, 0.0)
+
+        if isinstance(payoff, AsianFloatingVanilla):
+            x = key_arrays[payoff.key1][:, t_idx]
+            k = key_arrays[payoff.key2][:, t_idx]
+            if payoff.side == "call":
+                return np.maximum(x - k, 0.0)
+            return np.maximum(k - x, 0.0)
+
+        if isinstance(payoff, KnockOutAnyN):
+            inner = self._evaluate_payoff_vectorized(payoff.inner, key_arrays, t_idx)
+            knocked = np.zeros(inner.shape[0], dtype=bool)
+            for key in payoff.keys:
+                knocked |= key_arrays[key][:, t_idx].astype(bool)
+            return np.where(knocked, 0.0, inner)
+
+        if isinstance(payoff, KnockInAllN):
+            inner = self._evaluate_payoff_vectorized(payoff.inner, key_arrays, t_idx)
+            active = np.ones(inner.shape[0], dtype=bool)
+            for key in payoff.keys:
+                active &= key_arrays[key][:, t_idx].astype(bool)
+            return np.where(active, inner, 0.0)
+
+        if isinstance(payoff, KnockInKnockOut):
+            inner = self._evaluate_payoff_vectorized(payoff.inner, key_arrays, t_idx)
+            ki = key_arrays[payoff.ki_key][:, t_idx].astype(bool)
+            ko = key_arrays[payoff.ko_key][:, t_idx].astype(bool)
+            return np.where(ki & ~ko, inner, 0.0)
+
+        raise TypeError(f"Unsupported vectorized payoff type: {type(payoff)!r}")
+
     def _build_prefix_state(
         self, path_idx: int, t_idx: int, paths: np.ndarray, cache: dict[str, Any]
     ) -> dict[str, Any]:
@@ -284,6 +426,15 @@ class MonteCarloEngine:
         t_grid = self.timegrid
         discount = self._discount_grid
 
+        vector_keys = self._build_vectorized_key_arrays(paths)
+        if vector_keys is not None and self._is_vectorized_payoff(self.payoff):
+            return self._price_american_lsm_vectorized(
+                paths=paths,
+                t_grid=t_grid,
+                discount=discount,
+                key_arrays=vector_keys,
+            )
+
         y = np.empty(n_paths, dtype=float)
         df_t = discount[-1]
         for i in range(n_paths):
@@ -348,3 +499,65 @@ class MonteCarloEngine:
         price = float(np.mean(y))
         stderr = float(np.std(y, ddof=1) / math.sqrt(n_paths))
         return price, stderr
+
+    def _price_american_lsm_vectorized(
+        self,
+        paths: np.ndarray,
+        t_grid: np.ndarray,
+        discount: np.ndarray,
+        key_arrays: dict[str, np.ndarray],
+    ) -> tuple[float, float]:
+        n_paths, n_times = paths.shape
+        y = discount[-1] * self._evaluate_payoff_vectorized(
+            self.payoff, key_arrays, t_idx=n_times - 1
+        )
+        alive = np.ones(n_paths, dtype=bool)
+
+        exercise_indices = [
+            idx for idx in range(n_times) if self.exercise.exercise_time(idx, t_grid)
+        ]
+        if not exercise_indices:
+            return float(np.mean(y)), float(np.std(y, ddof=1) / math.sqrt(n_paths))
+
+        exercise_indices = sorted(set(exercise_indices))
+        exercise_indices = [idx for idx in exercise_indices if idx < n_times - 1]
+        if not exercise_indices:
+            return float(np.mean(y)), float(np.std(y, ddof=1) / math.sqrt(n_paths))
+
+        basis_keys = sorted(self.payoff.requires)
+        immediate = np.zeros(n_paths, dtype=float)
+
+        for t_idx in reversed(exercise_indices):
+            alive_idx = np.where(alive)[0]
+            if alive_idx.size == 0:
+                break
+
+            immediate.fill(0.0)
+            immediate_alive = discount[t_idx] * self._evaluate_payoff_vectorized(
+                self.payoff, key_arrays, t_idx=t_idx
+            )
+            immediate[alive_idx] = immediate_alive[alive_idx]
+
+            idx_itm = np.where((immediate > 0.0) & alive)[0]
+            if idx_itm.size == 0:
+                continue
+
+            d = len(basis_keys)
+            X = np.empty((idx_itm.size, 1 + d + d), dtype=float)
+            X[:, 0] = 1.0
+            for col, key in enumerate(basis_keys):
+                x = key_arrays[key][idx_itm, t_idx]
+                X[:, 1 + col] = x
+                X[:, 1 + d + col] = x * x
+
+            if X.shape[0] <= X.shape[1]:
+                continue
+
+            beta, *_ = np.linalg.lstsq(X, y[idx_itm], rcond=None)
+            continuation_est = X @ beta
+            exercise_paths = idx_itm[immediate[idx_itm] > continuation_est]
+
+            y[exercise_paths] = immediate[exercise_paths]
+            alive[exercise_paths] = False
+
+        return float(np.mean(y)), float(np.std(y, ddof=1) / math.sqrt(n_paths))

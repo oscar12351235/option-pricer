@@ -43,10 +43,7 @@ class VectorizedJumpGBMSampler:
             z_jump = z[step, :, 1]
 
             drift = (
-                self.r
-                - self.q
-                - 0.5 * self.sigma * self.sigma
-                - jump_intensity * jump_compensator
+                self.r - self.q - 0.5 * self.sigma * self.sigma - jump_intensity * jump_compensator
             ) * dt
             diffusion = self.sigma * np.sqrt(dt) * z_diff
             jump_multiplier = self.jump.step_multiplier(
