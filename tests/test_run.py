@@ -29,3 +29,31 @@ def test_run_pricer_gbm_jump_pipeline_smoke():
     assert math.isfinite(stderr)
     assert price >= 0.0
     assert stderr >= 0.0
+
+
+def test_graph_generation_is_separate_and_writes_file(tmp_path: Path):
+    cfg = run.RunConfig(
+        model_kind="gbm_jump",
+        exercise_kind="american",
+        payoff_kind="vanilla",
+        wrapper_kind="knockin",
+        jump_kind="none",
+        n_paths=120,
+        n_steps=12,
+        seed=5,
+        use_crn=True,
+        antithetic=True,
+    )
+    price, stderr, engine = run.run_pricer_with_engine(cfg)
+    assert math.isfinite(price)
+    assert math.isfinite(stderr)
+
+    output_path = tmp_path / "paths.png"
+    graph_path = run.generate_paths_graph(
+        engine=engine,
+        output_path=output_path,
+        max_paths=30,
+    )
+    assert graph_path == output_path
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
 import argparse
-import importlib
+import os
 import sys
 import time
-from dataclasses import fields
 from pathlib import Path
 
 import numpy as np
@@ -16,38 +16,24 @@ SRC_PATH = PROJECT_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-
-engine_mod = importlib.import_module("option-pricer.engine")
-config_mod = importlib.import_module("option-pricer.config")
-exercise_mod = importlib.import_module("option-pricer.exercise")
-features_mod = importlib.import_module("option-pricer.features.core")
-models_bates_mod = importlib.import_module("option-pricer.models.bates")
-models_gbm_jump_mod = importlib.import_module("option-pricer.models.gbm_jump")
-models_jumps_mod = importlib.import_module("option-pricer.models.jumps")
-models_numba_mod = importlib.import_module("option-pricer.models.numba_heston_qe")
-models_ql_mod = importlib.import_module("option-pricer.models.quantlib_heston")
-payoffs_mod = importlib.import_module("option-pricer.payoffs.core")
-
-
-MonteCarloEngine = engine_mod.MonteCarloEngine
-MonteCarloConfig = config_mod.MonteCarloConfig
-American = exercise_mod.American
-European = exercise_mod.European
-AsianFeature = features_mod.AsianFeature
-BarrierFeature = features_mod.BarrierFeature
-LookbackFeature = features_mod.LookbackFeature
-BatesModel = models_bates_mod.BatesModel
-VectorizedJumpGBMSampler = models_gbm_jump_mod.VectorizedJumpGBMSampler
-NoJump = models_jumps_mod.NoJump
-LognormalJumps = models_jumps_mod.LognormalJumps
-NumbaHestonSampler = models_numba_mod.NumbaHestonSampler
-HestonModel = models_ql_mod.HestonModel
-Vanilla = payoffs_mod.Vanilla
-Digital = payoffs_mod.Digital
-AsianFloatingVanilla = payoffs_mod.AsianFloatingVanilla
-KnockOutAnyN = payoffs_mod.KnockOutAnyN
-KnockInAllN = payoffs_mod.KnockInAllN
-KnockInKnockOut = payoffs_mod.KnockInKnockOut
+from option_pricer.config import MonteCarloConfig
+from option_pricer.engine import MonteCarloEngine
+from option_pricer.exercise import American, European
+from option_pricer.features.core import AsianFeature, BarrierFeature, LookbackFeature
+from option_pricer.models.bates import BatesModel
+from option_pricer.models.gbm_jump import VectorizedJumpGBMSampler
+from option_pricer.models.jumps import Jump, LognormalJumps, NoJump
+from option_pricer.models.numba_heston_qe import NumbaHestonSampler
+from option_pricer.models.quantlib_heston import HestonModel
+from option_pricer.payoffs.core import (
+    AsianFloatingVanilla,
+    Digital,
+    KnockInAllN,
+    KnockInKnockOut,
+    KnockOutAnyN,
+    Payoff,
+    Vanilla,
+)
 
 
 def _build_model(cfg: RunConfig):
@@ -94,17 +80,17 @@ def _build_model(cfg: RunConfig):
         )
 
     if cfg.jump_kind == "none":
-        jump = NoJump()
+        jump: Jump = NoJump()
     else:
         jump = LognormalJumps(lam=cfg.jump_lambda, mu=cfg.jump_mu, sigma=cfg.jump_sigma)
-    sampler = VectorizedJumpGBMSampler(
+    jump_sampler = VectorizedJumpGBMSampler(
         S0=cfg.s0,
         r=cfg.r,
         q=cfg.q,
         sigma=cfg.sigma,
         jump=jump,
     )
-    return BatesModel(sampler=sampler, S0=cfg.s0, r=cfg.r, q=cfg.q)
+    return BatesModel(sampler=jump_sampler, S0=cfg.s0, r=cfg.r, q=cfg.q)
 
 
 def _build_features(cfg: RunConfig):
@@ -129,6 +115,7 @@ def _build_features(cfg: RunConfig):
 
 
 def _build_payoff(cfg: RunConfig):
+    base: Payoff
     if cfg.payoff_kind == "vanilla":
         base = Vanilla(key="average", k=cfg.strike, side="call")
     elif cfg.payoff_kind == "digital":
@@ -157,7 +144,7 @@ def _build_exercise(cfg: RunConfig):
     return American()
 
 
-def run_pricer(cfg: RunConfig) -> tuple[float, float]:
+def build_engine(cfg: RunConfig):
     timegrid = np.linspace(0.0, cfg.maturity, cfg.n_steps + 1)
     mc_cfg = MonteCarloConfig(
         n_paths=cfg.n_paths,
@@ -179,12 +166,73 @@ def run_pricer(cfg: RunConfig) -> tuple[float, float]:
         exercise=exercise,
         config=mc_cfg,
     )
-    return engine.price()
+    return engine
+
+
+def run_pricer_with_engine(cfg: RunConfig) -> tuple[float, float, MonteCarloEngine]:
+    engine = build_engine(cfg)
+    price, stderr = engine.price()
+    return price, stderr, engine
+
+
+def run_pricer(cfg: RunConfig) -> tuple[float, float]:
+    price, stderr, _ = run_pricer_with_engine(cfg)
+    return price, stderr
+
+
+def generate_paths_graph(
+    engine: MonteCarloEngine,
+    output_path: Path,
+    max_paths: int = 5000,
+    randnumber_key: str = "graph",
+) -> Path:
+    mpl_cache_dir = PROJECT_ROOT / ".matplotlib-cache"
+    mpl_cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(mpl_cache_dir))
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    paths = engine._simulate_paths(randnumber_key=randnumber_key)
+    n_plot = min(int(max_paths), paths.shape[0])
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.plot(engine.timegrid, paths[:n_plot, :].T, alpha=0.12, linewidth=0.9)
+    ax.set_xlabel("Time (years)")
+    ax.set_ylabel("Underlying price")
+    ax.set_title(f"Simulated paths ({n_plot} of {paths.shape[0]})")
+    ax.grid(True, alpha=0.35)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=140)
+    plt.close(fig)
+
+    return output_path
+
+
+def print_pricing_results(cfg: RunConfig, price: float, stderr: float, elapsed: float) -> None:
+    print("Option pricer run")
+    print(
+        f"model={cfg.model_kind} exercise={cfg.exercise_kind} "
+        f"payoff={cfg.payoff_kind} wrapper={cfg.wrapper_kind}"
+    )
+    print(f"n_paths={cfg.n_paths} n_steps={cfg.n_steps} maturity={cfg.maturity} seed={cfg.seed}")
+    print(f"price={price:.10f}")
+    print(f"stderr={stderr:.10f}")
+    print(f"elapsed_seconds={elapsed:.4f}")
+    sys.stdout.flush()
 
 
 def _make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the vectorized option pricer.")
     parser.add_argument("--config-dir", type=Path, default=Path("config"))
+    parser.add_argument("--plot", dest="plot", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--plot-file", type=Path, default=Path("outputs/last_run_paths.png"))
+    parser.add_argument("--plot-max-paths", type=int, default=5000)
     parser.add_argument(
         "--model",
         dest="model_kind",
@@ -258,22 +306,32 @@ def main() -> None:
     parser = _make_parser()
     args = parser.parse_args()
     cfg = load_run_config(args.config_dir)
-    overrides = {field.name: getattr(args, field.name, None) for field in fields(RunConfig)}
+    overrides = {
+        field_name: getattr(args, field_name, None) for field_name in RunConfig.model_fields
+    }
     cfg = apply_overrides(cfg, overrides)
 
     started = time.perf_counter()
-    price, stderr = run_pricer(cfg)
+    price, stderr, engine = run_pricer_with_engine(cfg)
     elapsed = time.perf_counter() - started
 
-    print("Option pricer run")
-    print(
-        f"model={cfg.model_kind} exercise={cfg.exercise_kind} "
-        f"payoff={cfg.payoff_kind} wrapper={cfg.wrapper_kind}"
-    )
-    print(f"n_paths={cfg.n_paths} n_steps={cfg.n_steps} maturity={cfg.maturity} seed={cfg.seed}")
-    print(f"price={price:.10f}")
-    print(f"stderr={stderr:.10f}")
-    print(f"elapsed_seconds={elapsed:.4f}")
+    print_pricing_results(cfg, price, stderr, elapsed)
+
+    if not cfg.plot:
+        return
+
+    try:
+        plot_started = time.perf_counter()
+        graph_path = generate_paths_graph(
+            engine=engine,
+            output_path=args.plot_file,
+            max_paths=args.plot_max_paths,
+        )
+        plot_elapsed = time.perf_counter() - plot_started
+        print(f"graph_file={graph_path}")
+        print(f"graph_elapsed_seconds={plot_elapsed:.4f}")
+    except Exception as exc:  # pragma: no cover - best-effort graphing after pricing
+        print(f"graph_error={exc}")
 
 
 if __name__ == "__main__":

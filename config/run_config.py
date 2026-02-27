@@ -2,30 +2,26 @@ from __future__ import annotations
 
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-MODEL_KINDS = {"numba_heston", "quantlib_heston", "gbm_jump"}
-EXERCISE_KINDS = {"european", "american"}
-PAYOFF_KINDS = {"vanilla", "digital", "asian_floating"}
-WRAPPER_KINDS = {"none", "knockin", "knockout", "kiko"}
-DIGITAL_VARIANTS = {"cash", "asset"}
-JUMP_KINDS = {"none", "lognormal"}
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
-@dataclass(frozen=True)
-class RunConfig:
-    model_kind: str = "numba_heston"
-    exercise_kind: str = "american"
-    payoff_kind: str = "vanilla"
-    wrapper_kind: str = "knockin"
-    digital_variant: str = "cash"
-    jump_kind: str = "none"
-    n_paths: int = 20_000
-    n_steps: int = 252
-    maturity: float = 1.0
-    seed: int = 42
+class RunConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    model_kind: Literal["numba_heston", "quantlib_heston", "gbm_jump"] = "numba_heston"
+    exercise_kind: Literal["european", "american"] = "american"
+    payoff_kind: Literal["vanilla", "digital", "asian_floating"] = "vanilla"
+    wrapper_kind: Literal["none", "knockin", "knockout", "kiko"] = "knockin"
+    digital_variant: Literal["cash", "asset"] = "cash"
+    jump_kind: Literal["none", "lognormal"] = "none"
+    plot: bool = True
+    n_paths: int = Field(default=20_000, gt=0)
+    n_steps: int = Field(default=252, gt=0)
+    maturity: float = Field(default=1.0, gt=0.0)
+    seed: int = Field(default=42, ge=0)
     use_crn: bool = True
     antithetic: bool = True
     s0: float = 100.0
@@ -43,6 +39,12 @@ class RunConfig:
     jump_lambda: float = 0.30
     jump_mu: float = -0.10
     jump_sigma: float = 0.25
+
+    @model_validator(mode="after")
+    def _validate_antithetic_paths(self) -> RunConfig:
+        if self.antithetic and self.n_paths % 2 != 0:
+            raise ValueError("n_paths must be even when antithetic is enabled")
+        return self
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
@@ -62,32 +64,8 @@ def _section(data: dict[str, Any], section_name: str) -> dict[str, Any]:
     return dict(section)
 
 
-def _validate_choice(name: str, value: str, allowed: set[str]) -> None:
-    if value not in allowed:
-        allowed_txt = ", ".join(sorted(allowed))
-        raise ValueError(f"Invalid {name}={value!r}; expected one of: {allowed_txt}")
-
-
-def _validate(cfg: RunConfig) -> None:
-    _validate_choice("model_kind", cfg.model_kind, MODEL_KINDS)
-    _validate_choice("exercise_kind", cfg.exercise_kind, EXERCISE_KINDS)
-    _validate_choice("payoff_kind", cfg.payoff_kind, PAYOFF_KINDS)
-    _validate_choice("wrapper_kind", cfg.wrapper_kind, WRAPPER_KINDS)
-    _validate_choice("digital_variant", cfg.digital_variant, DIGITAL_VARIANTS)
-    _validate_choice("jump_kind", cfg.jump_kind, JUMP_KINDS)
-
-    if cfg.n_paths <= 0:
-        raise ValueError("n_paths must be positive")
-    if cfg.n_steps <= 0:
-        raise ValueError("n_steps must be positive")
-    if cfg.maturity <= 0:
-        raise ValueError("maturity must be positive")
-    if cfg.antithetic and cfg.n_paths % 2 != 0:
-        raise ValueError("n_paths must be even when antithetic is enabled")
-
-
 def apply_overrides(base: RunConfig, overrides: Mapping[str, Any]) -> RunConfig:
-    field_names = {field.name for field in fields(RunConfig)}
+    field_names = set(RunConfig.model_fields)
     cleaned: dict[str, Any] = {}
 
     for key, value in overrides.items():
@@ -97,9 +75,12 @@ def apply_overrides(base: RunConfig, overrides: Mapping[str, Any]) -> RunConfig:
             raise ValueError(f"Unknown run config key: {key}")
         cleaned[key] = value
 
-    cfg = replace(base, **cleaned)
-    _validate(cfg)
-    return cfg
+    merged = base.model_dump()
+    merged.update(cleaned)
+    try:
+        return RunConfig.model_validate(merged)
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def load_run_config(config_dir: Path | str = "config") -> RunConfig:

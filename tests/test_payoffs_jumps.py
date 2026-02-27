@@ -9,8 +9,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-payoffs_mod = importlib.import_module("option-pricer.payoffs.core")
-jumps_mod = importlib.import_module("option-pricer.models.jumps")
+payoffs_mod = importlib.import_module("option_pricer.payoffs.core")
+jumps_mod = importlib.import_module("option_pricer.models.jumps")
 
 AsianFloatingVanilla = payoffs_mod.AsianFloatingVanilla
 Digital = payoffs_mod.Digital

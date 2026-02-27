@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import math
 import sys
 from pathlib import Path
@@ -9,30 +8,20 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-config_mod = importlib.import_module("option-pricer.config")
-engine_mod = importlib.import_module("option-pricer.engine")
-exercise_mod = importlib.import_module("option-pricer.exercise")
-features_mod = importlib.import_module("option-pricer.features.core")
-models_mod = importlib.import_module("option-pricer.models.bates")
-payoffs_mod = importlib.import_module("option-pricer.payoffs.core")
-
-MonteCarloConfig = config_mod.MonteCarloConfig
-MonteCarloEngine = engine_mod.MonteCarloEngine
-American = exercise_mod.American
-European = exercise_mod.European
-Feature = features_mod.Feature
-AsianFeature = features_mod.AsianFeature
-BarrierFeature = features_mod.BarrierFeature
-LookbackFeature = features_mod.LookbackFeature
-BatesModel = models_mod.BatesModel
-KnockInAllN = payoffs_mod.KnockInAllN
-Payoff = payoffs_mod.Payoff
-Vanilla = payoffs_mod.Vanilla
-Digital = payoffs_mod.Digital
-AsianFloatingVanilla = payoffs_mod.AsianFloatingVanilla
-KnockOutAnyN = payoffs_mod.KnockOutAnyN
-KnockInKnockOut = payoffs_mod.KnockInKnockOut
+from option_pricer.config import MonteCarloConfig
+from option_pricer.engine import MonteCarloEngine
+from option_pricer.exercise import American, European
+from option_pricer.features.core import AsianFeature, BarrierFeature, Feature, LookbackFeature
+from option_pricer.models.bates import BatesModel
+from option_pricer.payoffs.core import (
+    AsianFloatingVanilla,
+    Digital,
+    KnockInAllN,
+    KnockInKnockOut,
+    KnockOutAnyN,
+    Payoff,
+    Vanilla,
+)
 
 
 class ConstantSampler:
@@ -323,9 +312,7 @@ def test_vectorized_key_arrays_return_none_for_missing_feature_or_unknown_payoff
         exercise=European(),
         config=cfg,
     )
-    key_arrays = engine_missing._build_vectorized_key_arrays(
-        np.array([[1.0, 2.0], [1.0, 2.0]])
-    )
+    key_arrays = engine_missing._build_vectorized_key_arrays(np.array([[1.0, 2.0], [1.0, 2.0]]))
     assert key_arrays is not None
 
     class UnknownPayoff(Payoff):
