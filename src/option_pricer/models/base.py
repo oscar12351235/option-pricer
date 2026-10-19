@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Optional, Protocol
+from typing import Protocol
+
 import numpy as np
 
 
@@ -10,8 +12,8 @@ class PathSampler(Protocol):
         n_paths: int,
         timegrid,
         randnumbergenerator,
-        randnumber_key: Optional[str] = None,
-        z: Optional[np.ndarray] = None,
+        randnumber_key: str | None = None,
+        z: np.ndarray | None = None,
     ) -> np.ndarray: ...
 
 

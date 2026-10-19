@@ -1,4 +1,5 @@
-from typing import Optional, Protocol
+from typing import Protocol
+
 import numpy as np
 
 
@@ -6,7 +7,7 @@ class Jump(Protocol):
     def compensator(self) -> float: ...
 
     def step_multiplier(
-        self, n: int, dt: float, randnumbergenerator, z: Optional[np.ndarray] = None
+        self, n: int, dt: float, randnumbergenerator, z: np.ndarray | None = None
     ): ...
 
 
@@ -32,6 +33,15 @@ class LognormalJumps:
         eta = np.ones(n, dtype=float)
         idx = np.nonzero(N)[0]
         if idx.size > 0:
-            z = z if z is not None else randnumbergenerator.standard_normal(idx.size)
-            eta[idx] = np.exp(self.mu * N[idx] + self.sigma * np.sqrt(N[idx]) * z)
+            if z is None:
+                z_sel = randnumbergenerator.standard_normal(idx.size)
+            else:
+                z_arr = np.asarray(z)
+                if z_arr.shape[0] == n:
+                    z_sel = z_arr[idx]
+                elif z_arr.shape[0] == idx.size:
+                    z_sel = z_arr
+                else:
+                    raise ValueError("z must have length n or number of jumps")
+            eta[idx] = np.exp(self.mu * N[idx] + self.sigma * np.sqrt(N[idx]) * z_sel)
         return eta
