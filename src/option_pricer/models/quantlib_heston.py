@@ -1,5 +1,6 @@
 import numpy as np
 import QuantLib as ql
+
 from .base import Model
 
 

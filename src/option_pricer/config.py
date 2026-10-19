@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+
 import numpy as np
 
 
@@ -7,6 +7,6 @@ import numpy as np
 class MonteCarloConfig:
     n_paths: int
     timegrid: np.ndarray
-    seed: Optional[int] = None
+    seed: int | None = None
     use_crn: bool = False
     antithetic: bool = False

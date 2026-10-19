@@ -32,7 +32,7 @@ class Payoff(ABC):
         self.requires: FrozenSet[str] = frozenset()
 
     @abstractmethod
-    def __call__(self, x: float) -> float:
+    def __call__(self, state: Dict[str, Any]) -> float:
         pass
 
 
@@ -357,7 +357,7 @@ class American:
 #############
 
 
-def PathSampler(Protocol):
+class PathSampler(Protocol):
     def __call__(self, n_paths, timegrid, randnumbergenerator, randnumber_key, z):
         pass
 

@@ -1,11 +1,11 @@
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import FrozenSet
 
 
 class Payoff(ABC):
     def __init__(self):
-        self.requires: FrozenSet[str] = frozenset()
+        self.requires: frozenset[str] = frozenset()
 
     @abstractmethod
     def __call__(self, state: dict) -> float: ...

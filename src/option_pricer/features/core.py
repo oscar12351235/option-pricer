@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import math
 from abc import ABC, abstractmethod
+
 import numpy as np
 
 
@@ -62,7 +64,7 @@ class BarrierFeature(Feature):
             else:
                 if len(timegrid) != len(path):
                     raise ValueError("state['t_grid'] length must equal len(path)")
-                if not isinstance(timegrid, (list, tuple, np.ndarray)):
+                if not isinstance(timegrid, list | tuple | np.ndarray):
                     raise ValueError("state['t_grid'] must be list/tuple/ndarray")
                 state[f"{self.name}_time"] = float(timegrid[hit_time_id])
 

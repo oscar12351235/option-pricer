@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 import math
-from typing import Tuple
+
 import numpy as np
 from numba import njit, prange
 
@@ -19,7 +20,7 @@ def heston_qe_step_scalar(
     zv: float,
     zind: float,
     v_floor: float,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     vt = v if v > v_floor else v_floor
     exp_kdt = math.exp(-kappa * dt)
 
