@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
+from typing import Any
 
 import numpy as np
 import pytest
@@ -317,7 +319,7 @@ def test_vectorized_key_arrays_return_none_for_missing_feature_or_unknown_payoff
             super().__init__()
             self.requires = frozenset({"terminal"})
 
-        def __call__(self, state: dict) -> float:
+        def __call__(self, state: Mapping[str, Any]) -> float:
             return float(state["terminal"])
 
     unknown = UnknownPayoff()
@@ -338,7 +340,7 @@ class Opaque(Payoff):
         self.inner = inner
         self.requires = inner.requires
 
-    def __call__(self, state: dict) -> float:
+    def __call__(self, state: Mapping[str, Any]) -> float:
         return float(self.inner(state))
 
 
