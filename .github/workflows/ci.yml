@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: |
           poetry env use "${{ steps.setup-python.outputs.python-path }}"
-          poetry install --with dev,lint,types
+          poetry install --with dev,lint
 
       - name: Ruff
         run: poetry run ruff check .

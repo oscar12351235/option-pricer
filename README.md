@@ -115,7 +115,7 @@ table, which Poetry 1.x cannot read).
 ```bash
 git clone https://github.com/oscar12351235/option-pricer.git
 cd option-pricer
-poetry install --with dev,lint,types
+poetry install --with dev,lint
 poetry run python run.py
 ```
 
@@ -225,7 +225,7 @@ agree.
 ## Development
 
 ```bash
-poetry install --with dev,lint,types
+poetry install --with dev,lint
 poetry run pytest                 # full suite with coverage (fails below 80%) and benchmark table
 poetry run pytest -m "not slow"   # skip the large-path benchmarks
 poetry run ruff check .
