@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import math
-import sys
-from pathlib import Path
+from collections.abc import Mapping
+from typing import Any
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from option_pricer.config import MonteCarloConfig
 from option_pricer.engine import MonteCarloEngine
 from option_pricer.exercise import American, European
@@ -320,7 +319,7 @@ def test_vectorized_key_arrays_return_none_for_missing_feature_or_unknown_payoff
             super().__init__()
             self.requires = frozenset({"terminal"})
 
-        def __call__(self, state: dict) -> float:
+        def __call__(self, state: Mapping[str, Any]) -> float:
             return float(state["terminal"])
 
     unknown = UnknownPayoff()
@@ -331,3 +330,146 @@ def test_vectorized_key_arrays_return_none_for_missing_feature_or_unknown_payoff
             {"terminal": np.array([[1.0, 2.0]])},
             t_idx=1,
         )
+
+
+class Opaque(Payoff):
+    """Wraps a built-in payoff so that the engine must use its per-path fallback."""
+
+    def __init__(self, inner: Payoff):
+        super().__init__()
+        self.inner = inner
+        self.requires = inner.requires
+
+    def __call__(self, state: Mapping[str, Any]) -> float:
+        return float(self.inner(state))
+
+
+class MaturityOnly:
+    def exercise_time(self, timeindex, timegrid):
+        return timeindex == len(timegrid) - 1
+
+
+class Quarterly:
+    def exercise_time(self, timeindex, timegrid):
+        return 0 < timeindex < len(timegrid) - 1 and timeindex % 3 == 0
+
+
+def _gbm_engine(payoff, features, exercise, n_paths=2_000, n_times=13, seed=17, antithetic=True):
+    model = BatesModel(
+        sampler=VectorizedGBMSampler(s0=100.0, mu=0.02, sigma=0.3), S0=100.0, r=0.02, q=0.0
+    )
+    cfg = MonteCarloConfig(
+        n_paths=n_paths,
+        timegrid=np.linspace(0.0, 1.0, n_times),
+        seed=seed,
+        use_crn=True,
+        antithetic=antithetic,
+    )
+    return MonteCarloEngine(
+        model=model, payoff=payoff, features=features, exercise=exercise, config=cfg
+    )
+
+
+@pytest.mark.parametrize(
+    "timegrid, n_paths, antithetic, message",
+    [
+        (np.zeros((2, 2)), 10, False, "1D"),
+        (np.array([0.0]), 10, False, "at least two"),
+        (np.linspace(0.0, 1.0, 3), 0, False, "positive"),
+        (np.linspace(0.0, 1.0, 3), 11, True, "even"),
+    ],
+)
+def test_engine_validates_its_configuration(timegrid, n_paths, antithetic, message):
+    cfg = MonteCarloConfig(n_paths=n_paths, timegrid=timegrid, antithetic=antithetic)
+    model = BatesModel(sampler=ConstantSampler(s0=100.0), S0=100.0, r=0.0, q=0.0)
+    with pytest.raises(ValueError, match=message):
+        MonteCarloEngine(
+            model=model,
+            payoff=Vanilla(key="terminal", k=100.0, side="call"),
+            features=[],
+            exercise=European(),
+            config=cfg,
+        )
+
+
+FALLBACK_CASES = {
+    "vanilla put": (Vanilla(key="terminal", k=105.0, side="put"), []),
+    "asian knock-in": (
+        KnockInAllN(inner=Vanilla(key="average", k=100.0, side="call"), keys=["KI_flag"]),
+        [
+            AsianFeature(),
+            BarrierFeature(name="KI", level=110.0, direction="up", strict=False, track_time=True),
+        ],
+    ),
+    "lookback range with knock-out": (
+        KnockOutAnyN(
+            inner=AsianFloatingVanilla(key1="max", key2="min", side="call"), keys=["KO_flag"]
+        ),
+        [
+            LookbackFeature(mode="both", track_time=True),
+            BarrierFeature(name="KO", level=70.0, direction="down", strict=True, track_time=True),
+        ],
+    ),
+    "floating-strike asian put": (
+        AsianFloatingVanilla(key1="terminal", key2="average", side="put"),
+        [AsianFeature()],
+    ),
+    "lookback min put": (
+        Vanilla(key="min", k=100.0, side="put"),
+        [LookbackFeature(mode="min", track_time=False)],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(FALLBACK_CASES))
+@pytest.mark.parametrize("exercise", [European(), American()], ids=["european", "american"])
+def test_per_path_fallback_agrees_with_vectorised_pricer(case, exercise):
+    payoff, features = FALLBACK_CASES[case]
+    vectorised = _gbm_engine(payoff, features, exercise).price()
+    fallback = _gbm_engine(Opaque(payoff), features, exercise).price()
+    assert fallback == pytest.approx(vectorised, rel=1e-9, abs=1e-12)
+
+
+@pytest.mark.parametrize("wrap", [False, True], ids=["vectorised", "fallback"])
+def test_policies_without_early_exercise_reduce_to_european(wrap):
+    payoff = Vanilla(key="terminal", k=100.0, side="put")
+    payoff_used = Opaque(payoff) if wrap else payoff
+    european = _gbm_engine(payoff, [], European()).price()
+    for exercise in (MaturityOnly(), NeverExercise()):
+        assert _gbm_engine(payoff_used, [], exercise).price() == pytest.approx(european)
+
+
+def test_bermudan_lies_between_european_and_american():
+    payoff = Vanilla(key="terminal", k=110.0, side="put")
+    european, _ = _gbm_engine(payoff, [], European(), n_paths=20_000).price()
+    bermudan, se_b = _gbm_engine(payoff, [], Quarterly(), n_paths=20_000).price()
+    american, se_a = _gbm_engine(payoff, [], American(), n_paths=20_000).price()
+    assert european < bermudan
+    assert bermudan <= american + 2.0 * math.hypot(se_a, se_b)
+
+
+def test_fallback_skips_regression_when_no_path_is_in_the_money():
+    payoff = Opaque(Vanilla(key="terminal", k=1.0, side="put"))
+    price, stderr = _gbm_engine(payoff, [], American()).price()
+    assert price == 0.0
+    assert stderr == 0.0
+
+
+def test_antithetic_standard_error_uses_pair_averages():
+    engine = _gbm_engine(Vanilla(key="terminal", k=100.0, side="call"), [], European())
+    samples = np.concatenate([np.full(1_000, 1.0), np.full(1_000, 3.0)])
+    price, stderr = engine._estimate(samples)
+    # Every antithetic pair averages to 2.0, so the estimator has no variance.
+    assert price == pytest.approx(2.0)
+    assert stderr == pytest.approx(0.0)
+
+    plain = _gbm_engine(
+        Vanilla(key="terminal", k=100.0, side="call"), [], European(), antithetic=False
+    )
+    assert plain._estimate(samples)[1] == pytest.approx(np.std(samples, ddof=1) / math.sqrt(2_000))
+
+
+def test_exercise_policies_flag_expected_dates():
+    grid = np.linspace(0.0, 1.0, 5)
+    assert [European().exercise_time(i, grid) for i in range(5)] == [False] * 4 + [True]
+    assert [American().exercise_time(i, grid) for i in range(5)] == [False, True, True, True, False]
