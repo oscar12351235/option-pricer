@@ -36,8 +36,15 @@ from option_pricer.payoffs.core import (
 )
 
 
+def _build_jump(cfg: RunConfig) -> Jump:
+    if cfg.jump_kind == "none":
+        return NoJump()
+    return LognormalJumps(lam=cfg.jump_lambda, mu=cfg.jump_mu, sigma=cfg.jump_sigma)
+
+
 def _build_model(cfg: RunConfig):
     if cfg.model_kind == "numba_heston":
+        # Heston, or Bates when jump_kind = "lognormal".
         sampler = NumbaHestonSampler(
             S0=cfg.s0,
             v0=cfg.v0,
@@ -47,7 +54,7 @@ def _build_model(cfg: RunConfig):
             rho=cfg.rho,
             r=cfg.r,
             q=cfg.q,
-            v_floor=1e-12,
+            jump=_build_jump(cfg),
         )
         return BatesModel(sampler=sampler, S0=cfg.s0, r=cfg.r, q=cfg.q)
 
@@ -79,16 +86,12 @@ def _build_model(cfg: RunConfig):
             rho=cfg.rho,
         )
 
-    if cfg.jump_kind == "none":
-        jump: Jump = NoJump()
-    else:
-        jump = LognormalJumps(lam=cfg.jump_lambda, mu=cfg.jump_mu, sigma=cfg.jump_sigma)
     jump_sampler = VectorizedJumpGBMSampler(
         S0=cfg.s0,
         r=cfg.r,
         q=cfg.q,
         sigma=cfg.sigma,
-        jump=jump,
+        jump=_build_jump(cfg),
     )
     return BatesModel(sampler=jump_sampler, S0=cfg.s0, r=cfg.r, q=cfg.q)
 

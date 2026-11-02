@@ -90,17 +90,39 @@ class MonteCarloEngine:
             dtype=float,
         )
 
+        self._n_factors = int(getattr(self.model, "n_factors", 2))
         self._z_crn = None
         supports_crn = getattr(self.model, "supports_crn", False)
         supports_antithetic = getattr(self.model, "supports_antithetic", False)
+        self._antithetic_pairs = bool(self.cfg.antithetic and supports_crn and supports_antithetic)
         if self.cfg.use_crn and supports_crn:
-            n_steps = len(self.timegrid) - 1
             if self.cfg.antithetic and supports_antithetic:
-                n_half = self.n_paths // 2
-                z_half = self.rng.standard_normal(size=(n_steps, n_half, 2))
-                self._z_crn = np.concatenate([z_half, -z_half], axis=1)
+                self._z_crn = self._antithetic_normals()
             else:
-                self._z_crn = self.rng.standard_normal(size=(n_steps, self.n_paths, 2))
+                n_steps = len(self.timegrid) - 1
+                self._z_crn = self.rng.standard_normal(
+                    size=(n_steps, self.n_paths, self._n_factors)
+                )
+
+    def _estimate(self, samples: np.ndarray) -> tuple[float, float]:
+        """Sample mean of the discounted cash flows and its standard error.
+
+        With antithetic variates, path ``i`` and path ``i + n_paths // 2`` are
+        driven by opposite normals and are not independent, so the standard
+        error is computed from the ``n_paths // 2`` pair averages.
+        """
+        if self._antithetic_pairs:
+            half = self.n_paths // 2
+            samples = 0.5 * (samples[:half] + samples[half:])
+        price = float(np.mean(samples))
+        stderr = float(np.std(samples, ddof=1) / math.sqrt(len(samples)))
+        return price, stderr
+
+    def _antithetic_normals(self) -> np.ndarray:
+        """Normal tensor whose second half of paths is the negated first half."""
+        n_steps = len(self.timegrid) - 1
+        z_half = self.rng.standard_normal(size=(n_steps, self.n_paths // 2, self._n_factors))
+        return np.concatenate([z_half, -z_half], axis=1)
 
     def price(self) -> tuple[float, float]:
         """Return the Monte Carlo price and its standard error."""
@@ -128,10 +150,7 @@ class MonteCarloEngine:
             if self._z_crn is not None:
                 z = self._z_crn
             elif self.cfg.antithetic and supports_antithetic:
-                n_steps = len(self.timegrid) - 1
-                n_half = self.n_paths // 2
-                z_half = self.rng.standard_normal(size=(n_steps, n_half, 2))
-                z = np.concatenate([z_half, -z_half], axis=1)
+                z = self._antithetic_normals()
 
         paths = sampler(
             n_paths=self.n_paths,
@@ -172,9 +191,7 @@ class MonteCarloEngine:
                     feat.apply(path, state)
                 discounted[i] = df_t * float(self.payoff(state))
 
-        price = float(np.mean(discounted))
-        stderr = float(np.std(discounted, ddof=1) / math.sqrt(self.n_paths))
-        return price, stderr
+        return self._estimate(discounted)
 
     def _build_american_feature_cache(self, paths: np.ndarray) -> dict[str, Any]:
         """Precompute running feature values on path prefixes for the per-path LSM fallback.
@@ -388,63 +405,40 @@ class MonteCarloEngine:
                 feat.apply(path, state)
             Y[i] = df_T * float(self.payoff(state))
 
-        alive = np.ones(n_paths, dtype=bool)
         exercise_indices = [
             idx for idx in range(n_times) if self.exercise.exercise_time(idx, self.timegrid)
         ]
         if not exercise_indices:
-            price = float(np.mean(Y))
-            stderr = float(np.std(Y, ddof=1) / math.sqrt(n_paths))
-            return price, stderr
+            return self._estimate(Y)
 
         exercise_indices = sorted(set(exercise_indices))
         exercise_indices = [idx for idx in exercise_indices if idx < n_times - 1]
         if not exercise_indices:
-            price = float(np.mean(Y))
-            stderr = float(np.std(Y, ddof=1) / math.sqrt(n_paths))
-            return price, stderr
+            return self._estimate(Y)
 
         cache = self._build_american_feature_cache(paths)
         basis_keys = sorted(self.payoff.requires)
 
+        # Backward induction. Every path is reconsidered at every date: exercising
+        # at t_idx replaces any later exercise previously recorded in Y.
         for t_idx in reversed(exercise_indices):
             df_t = self._discount_grid[t_idx]
-            alive_idx = np.where(alive)[0]
-            if alive_idx.size == 0:
-                break
+            states = [
+                self._build_prefix_state(path_idx, t_idx, paths, cache)
+                for path_idx in range(n_paths)
+            ]
+            immediate = np.array([df_t * float(self.payoff(state)) for state in states])
 
-            immediate = np.zeros(n_paths, dtype=float)
-            states_alive: dict[int, dict[str, Any]] = {}
-
-            for path_idx in alive_idx:
-                state = self._build_prefix_state(path_idx, t_idx, paths, cache)
-                states_alive[path_idx] = state
-                immediate[path_idx] = df_t * float(self.payoff(state))
-
-            idx_itm = np.where((immediate > 0.0) & alive)[0]
-            if idx_itm.size == 0:
-                continue
-
-            states_itm = [states_alive[path_idx] for path_idx in idx_itm]
-            X = self._build_regression_basis(states_itm, basis_keys)
-            y = Y[idx_itm]
-
+            idx_itm = np.nonzero(immediate > 0.0)[0]
+            X = self._build_regression_basis([states[i] for i in idx_itm], basis_keys)
             if X.shape[0] <= X.shape[1]:
                 continue
 
-            beta, *_ = np.linalg.lstsq(X, y, rcond=None)
-            continuation_est = X @ beta
-
-            exercise_now = np.zeros(n_paths, dtype=bool)
-            for j, path_idx in enumerate(idx_itm):
-                exercise_now[path_idx] = immediate[path_idx] > continuation_est[j]
-
+            beta, *_ = np.linalg.lstsq(X, Y[idx_itm], rcond=None)
+            exercise_now = idx_itm[immediate[idx_itm] > X @ beta]
             Y[exercise_now] = immediate[exercise_now]
-            alive[exercise_now] = False
 
-        price = float(np.mean(Y))
-        stderr = float(np.std(Y, ddof=1) / math.sqrt(n_paths))
-        return price, stderr
+        return self._estimate(Y)
 
     def _price_american_lsm_vectorized(
         self,
@@ -459,55 +453,35 @@ class MonteCarloEngine:
             t_idx=n_times - 1,
         )
 
-        alive = np.ones(n_paths, dtype=bool)
         exercise_indices = [
             idx for idx in range(n_times) if self.exercise.exercise_time(idx, self.timegrid)
         ]
         if not exercise_indices:
-            price = float(np.mean(Y))
-            stderr = float(np.std(Y, ddof=1) / math.sqrt(n_paths))
-            return price, stderr
+            return self._estimate(Y)
 
         exercise_indices = sorted(set(exercise_indices))
         exercise_indices = [idx for idx in exercise_indices if idx < n_times - 1]
         if not exercise_indices:
-            price = float(np.mean(Y))
-            stderr = float(np.std(Y, ddof=1) / math.sqrt(n_paths))
-            return price, stderr
+            return self._estimate(Y)
 
         basis_keys = sorted(self.payoff.requires)
 
         for t_idx in reversed(exercise_indices):
-            alive_idx = np.where(alive)[0]
-            if alive_idx.size == 0:
-                break
-
             immediate = self._discount_grid[t_idx] * self._evaluate_payoff_vectorized(
                 self.payoff,
                 key_arrays,
                 t_idx=t_idx,
             )
-            idx_itm = alive_idx[immediate[alive_idx] > 0.0]
-            if idx_itm.size == 0:
-                continue
-
+            idx_itm = np.nonzero(immediate > 0.0)[0]
             X = self._build_regression_basis_from_arrays(key_arrays, basis_keys, idx_itm, t_idx)
-            y = Y[idx_itm]
             if X.shape[0] <= X.shape[1]:
                 continue
 
-            beta, *_ = np.linalg.lstsq(X, y, rcond=None)
-            continuation_est = X @ beta
-            exercise_now = idx_itm[immediate[idx_itm] > continuation_est]
-            if exercise_now.size == 0:
-                continue
-
+            beta, *_ = np.linalg.lstsq(X, Y[idx_itm], rcond=None)
+            exercise_now = idx_itm[immediate[idx_itm] > X @ beta]
             Y[exercise_now] = immediate[exercise_now]
-            alive[exercise_now] = False
 
-        price = float(np.mean(Y))
-        stderr = float(np.std(Y, ddof=1) / math.sqrt(n_paths))
-        return price, stderr
+        return self._estimate(Y)
 
     def _build_vectorized_key_arrays(self, paths: np.ndarray) -> dict[str, np.ndarray] | None:
         """Running value of every state key at every date, shape ``(n_paths, n_times)``.

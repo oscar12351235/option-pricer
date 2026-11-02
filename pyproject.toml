@@ -50,6 +50,9 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["option_pricer", "config", "run"]
+
 [tool.black]
 line-length = 100
 target-version = ["py312"]
@@ -69,6 +72,7 @@ addopts = [
   "--junitxml=report.xml"
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = ["slow: Monte Carlo benchmarks with large path counts (deselect with -m 'not slow')"]
 
 [tool.coverage.report]
 fail_under = 80
