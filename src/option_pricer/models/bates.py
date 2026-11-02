@@ -12,8 +12,8 @@ class BatesModel(Model):
     It is used with :class:`~option_pricer.models.NumbaHestonSampler` (Heston,
     or Bates when jumps are given) and with
     :class:`~option_pricer.models.VectorizedJumpGBMSampler`. The sampler's
-    ``supports_crn`` / ``supports_antithetic`` capabilities are forwarded to
-    the engine.
+    ``supports_crn`` / ``supports_antithetic`` capabilities and the number of
+    normals it consumes per step (``n_factors``) are forwarded to the engine.
     """
 
     def __init__(self, sampler: PathSampler, S0: float, r: float, q: float) -> None:
@@ -23,6 +23,7 @@ class BatesModel(Model):
         self._q = float(q)
         self.supports_crn = getattr(sampler, "supports_crn", False)
         self.supports_antithetic = getattr(sampler, "supports_antithetic", False)
+        self.n_factors = int(getattr(sampler, "n_factors", 2))
 
     def s0(self) -> float:
         return self._S0
