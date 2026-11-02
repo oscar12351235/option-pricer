@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -82,12 +83,13 @@ def test_jump_models_cover_shape_paths_and_error_branch():
     assert jump.compensator() == pytest.approx(expected_k)
 
     # Branch where no jumps happen (idx.size == 0)
-    rng_none = FakeRng(N=[0, 0, 0], z=[0.0, 0.0, 0.0])
+    # FakeRng stands in for np.random.Generator (only poisson/standard_normal are used).
+    rng_none: Any = FakeRng(N=[0, 0, 0], z=[0.0, 0.0, 0.0])
     out_none = jump.step_multiplier(3, 0.2, rng_none, z=np.array([0.1, 0.2, 0.3]))
     assert np.allclose(out_none, np.ones(3))
 
     # Branch where z has full n length and is filtered by idx
-    rng_some = FakeRng(N=[0, 2, 1, 0], z=[0.5, -0.1, 0.3, 0.0])
+    rng_some: Any = FakeRng(N=[0, 2, 1, 0], z=[0.5, -0.1, 0.3, 0.0])
     out_full = jump.step_multiplier(4, 0.2, rng_some, z=np.array([0.7, 0.2, -0.4, 0.1]))
     assert out_full.shape == (4,)
     assert out_full[0] == pytest.approx(1.0)

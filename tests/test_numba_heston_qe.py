@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numba
 import numpy as np
@@ -23,7 +24,9 @@ from option_pricer.models.numba_heston_qe import (
     simulate_bates_qe,
 )
 
-HESTON = dict(S0=100.0, v0=0.04, kappa=1.5, theta=0.04, sigma=0.5, rho=-0.7, r=0.03, q=0.01)
+HESTON: dict[str, Any] = dict(
+    S0=100.0, v0=0.04, kappa=1.5, theta=0.04, sigma=0.5, rho=-0.7, r=0.03, q=0.01
+)
 JUMPS = LognormalJumps(lam=0.4, mu=-0.12, sigma=0.18)
 GRID = np.linspace(0.0, 1.0, 21)
 
