@@ -1,3 +1,5 @@
+"""Monte Carlo engine: European pricing and Longstaff-Schwartz for early exercise."""
+
 from __future__ import annotations
 
 import math
@@ -7,7 +9,7 @@ from typing import Any
 import numpy as np
 
 from .config import MonteCarloConfig
-from .exercise import American, European
+from .exercise import American, European, Exercise
 from .features.core import AsianFeature, BarrierFeature, Feature, LookbackFeature
 from .models.base import Model
 from .payoffs.core import (
@@ -22,6 +24,7 @@ from .payoffs.core import (
 
 
 def payoff_feature_key(payoff: Payoff, features: Sequence[Feature]) -> None:
+    """Raise ``ValueError`` if ``payoff`` requires a state key no feature provides."""
     provided = {"terminal"}
     for feat in features:
         provided |= set(feat.provides)
@@ -35,14 +38,28 @@ def payoff_feature_key(payoff: Payoff, features: Sequence[Feature]) -> None:
 
 
 class MonteCarloEngine:
+    """Monte Carlo pricer combining a model, a payoff, path features and an exercise policy.
+
+    European exercise averages discounted payoffs. Any other policy
+    (:class:`~option_pricer.exercise.American`, or a custom Bermudan
+    :class:`~option_pricer.exercise.Exercise`) is priced by Longstaff-Schwartz
+    regression, which supports path-dependent payoffs through the features.
+
+    The built-in payoffs and features are evaluated on whole path arrays; a
+    user-defined payoff or feature switches to a per-path fallback that calls
+    ``Payoff.__call__`` and ``Feature.apply``.
+
+    ``price`` returns ``(price, standard_error)``.
+    """
+
     def __init__(
         self,
         model: Model,
         payoff: Payoff,
         features: Sequence[Feature],
-        exercise,
+        exercise: Exercise,
         config: MonteCarloConfig,
-    ):
+    ) -> None:
         self.model = model
         self.payoff = payoff
         self.features = list(features)
@@ -86,13 +103,22 @@ class MonteCarloEngine:
                 self._z_crn = self.rng.standard_normal(size=(n_steps, self.n_paths, 2))
 
     def price(self) -> tuple[float, float]:
+        """Return the Monte Carlo price and its standard error."""
         if isinstance(self.exercise, European):
             return self._price_european()
         if isinstance(self.exercise, American):
             return self._price_american_lsm()
+        # Any other policy (e.g. Bermudan) is handled by LSM via exercise_time().
         return self._price_american_lsm()
 
     def _simulate_paths(self, randnumber_key: str = "base") -> np.ndarray:
+        """Simulate ``(n_paths, n_times)`` spot paths.
+
+        Samplers with ``supports_crn`` receive the engine's normal tensor: the
+        cached one when common random numbers are enabled, or a fresh
+        antithetic one. Other samplers draw their own randomness from
+        ``self.rng``.
+        """
         sampler = self.model.path_sampler()
         supports_crn = getattr(self.model, "supports_crn", False)
         supports_antithetic = getattr(self.model, "supports_antithetic", False)
@@ -151,6 +177,11 @@ class MonteCarloEngine:
         return price, stderr
 
     def _build_american_feature_cache(self, paths: np.ndarray) -> dict[str, Any]:
+        """Precompute running feature values on path prefixes for the per-path LSM fallback.
+
+        Asian, lookback and barrier features are cached as arrays; any other
+        feature is recomputed from the path prefix in ``_build_prefix_state``.
+        """
         n_paths, n_times = paths.shape
 
         cache: dict[str, Any] = {
@@ -251,6 +282,11 @@ class MonteCarloEngine:
         paths: np.ndarray,
         cache: dict[str, Any],
     ) -> dict[str, Any]:
+        """State at ``t_idx`` using only the path prefix up to ``t_idx``.
+
+        ``"terminal"`` is the current spot, so payoffs evaluated here give the
+        immediate exercise value.
+        """
         t_grid = self.timegrid
         state: dict[str, Any] = {"terminal": float(paths[path_idx, t_idx])}
 
@@ -295,6 +331,7 @@ class MonteCarloEngine:
         states: Sequence[dict[str, Any]],
         basis_keys: Sequence[str],
     ) -> np.ndarray:
+        """LSM design matrix ``[1, x_j, x_j^2]`` for each state key ``x_j`` in ``basis_keys``."""
         n = len(states)
         d = len(basis_keys)
         X = np.empty((n, 1 + d + d), dtype=float)
@@ -312,6 +349,7 @@ class MonteCarloEngine:
         row_idx: np.ndarray,
         t_idx: int,
     ) -> np.ndarray:
+        """Vectorised version of ``_build_regression_basis`` for the rows ``row_idx``."""
         d = len(basis_keys)
         X = np.empty((len(row_idx), 1 + d + d), dtype=float)
         X[:, 0] = 1.0
@@ -324,6 +362,16 @@ class MonteCarloEngine:
         return X
 
     def _price_american_lsm(self) -> tuple[float, float]:
+        """Longstaff-Schwartz (2001) regression for American / Bermudan exercise.
+
+        Cash flows are initialised with the discounted payoff at maturity and
+        updated backwards over the exercise dates. At each date the discounted
+        future cash flow of the in-the-money paths is regressed on
+        ``[1, x_j, x_j^2]``, where the ``x_j`` are the state keys the payoff
+        requires (for a vanilla option, the spot). A path exercises when its
+        immediate value exceeds the fitted continuation value. The same paths
+        are used for regression and valuation.
+        """
         paths = self._simulate_paths(randnumber_key="american")
         n_paths, n_times = paths.shape
 
@@ -403,6 +451,7 @@ class MonteCarloEngine:
         paths: np.ndarray,
         key_arrays: dict[str, np.ndarray],
     ) -> tuple[float, float]:
+        """``_price_american_lsm`` on whole arrays (built-in payoffs and features only)."""
         n_paths, n_times = paths.shape
         Y = self._discount_grid[-1] * self._evaluate_payoff_vectorized(
             self.payoff,
@@ -461,6 +510,10 @@ class MonteCarloEngine:
         return price, stderr
 
     def _build_vectorized_key_arrays(self, paths: np.ndarray) -> dict[str, np.ndarray] | None:
+        """Running value of every state key at every date, shape ``(n_paths, n_times)``.
+
+        Returns ``None`` if an active feature has no vectorised implementation.
+        """
         key_arrays: dict[str, np.ndarray] = {"terminal": np.asarray(paths, dtype=float)}
         n_paths, n_times = paths.shape
 
@@ -521,6 +574,7 @@ class MonteCarloEngine:
         return key_arrays
 
     def _is_vectorized_payoff(self, payoff: Payoff) -> bool:
+        """Whether ``payoff`` (and any wrapped inner payoff) is a built-in type."""
         if isinstance(payoff, Vanilla | Digital | AsianFloatingVanilla):
             return True
         if isinstance(payoff, KnockOutAnyN | KnockInAllN | KnockInKnockOut):
@@ -533,6 +587,7 @@ class MonteCarloEngine:
         key_arrays: dict[str, np.ndarray],
         t_idx: int,
     ) -> np.ndarray:
+        """Evaluate a built-in payoff on all paths at date ``t_idx``."""
         if isinstance(payoff, Vanilla):
             x = np.asarray(key_arrays[payoff.key])[:, t_idx].astype(float)
             if payoff.side == "call":
