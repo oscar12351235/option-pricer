@@ -2,19 +2,36 @@ from __future__ import annotations
 
 import numpy as np
 
+from .jumps import Jump
+
 
 class VectorizedJumpGBMSampler:
+    """Geometric Brownian motion with optional jumps (Merton 1976), vectorised over paths.
+
+    Simulates ``dS/S = (r - q - lambda * k) dt + sigma dW + (e^J - 1) dN`` exactly
+    on the grid. Factor 0 of ``z`` drives the diffusion and factor 1 the jump
+    sizes; jump counts are drawn from ``randnumbergenerator``. With
+    :class:`~option_pricer.models.NoJump` this is Black-Scholes.
+    """
+
     supports_crn = True
     supports_antithetic = True
 
-    def __init__(self, S0: float, r: float, q: float, sigma: float, jump):
+    def __init__(self, S0: float, r: float, q: float, sigma: float, jump: Jump) -> None:
         self.S0 = float(S0)
         self.r = float(r)
         self.q = float(q)
         self.sigma = float(sigma)
         self.jump = jump
 
-    def __call__(self, n_paths, timegrid, randnumbergenerator, randnumber_key=None, z=None):
+    def __call__(
+        self,
+        n_paths: int,
+        timegrid: np.ndarray,
+        randnumbergenerator: np.random.Generator,
+        randnumber_key: str | None = None,
+        z: np.ndarray | None = None,
+    ) -> np.ndarray:
         n_paths = int(n_paths)
         timegrid = np.asarray(timegrid, dtype=float)
         n_steps = len(timegrid) - 1

@@ -1,3 +1,5 @@
+"""Interfaces shared by all models."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -7,22 +9,36 @@ import numpy as np
 
 
 class PathSampler(Protocol):
+    """Simulates spot paths on a time grid.
+
+    Returns an array of shape ``(n_paths, len(timegrid))`` whose first column
+    is the initial spot. Samplers that set ``supports_crn = True`` accept a
+    tensor of standard normals ``z`` of shape ``(n_steps, n_paths, n_factors)``
+    supplied by the engine; otherwise ``z`` is ignored and all randomness comes
+    from ``randnumbergenerator``.
+    """
+
     def __call__(
         self,
         n_paths: int,
-        timegrid,
-        randnumbergenerator,
+        timegrid: np.ndarray,
+        randnumbergenerator: np.random.Generator,
         randnumber_key: str | None = None,
         z: np.ndarray | None = None,
     ) -> np.ndarray: ...
 
 
 class Model(ABC):
-    @abstractmethod
-    def s0(self) -> float: ...
+    """A pricing model: initial spot, discount curve and a path sampler."""
 
     @abstractmethod
-    def discount(self, t: float) -> float: ...
+    def s0(self) -> float:
+        """Initial spot price."""
 
     @abstractmethod
-    def path_sampler(self) -> PathSampler: ...
+    def discount(self, t: float) -> float:
+        """Discount factor from time ``t`` to 0."""
+
+    @abstractmethod
+    def path_sampler(self) -> PathSampler:
+        """Sampler used by the engine to simulate paths."""

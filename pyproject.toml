@@ -1,23 +1,46 @@
 [project]
 name = "option-pricer"
 version = "0.1.0"
-description = "Quantitative Python project scaffold (src layout + Poetry)"
+description = "Monte Carlo pricer for European and American exotic options under the Heston and Bates models"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
-authors = [{ name = "Your Name", email = "you@example.com" }]
-license = { text = "Proprietary" }
+authors = [{ name = "Oscar Bonnet" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+  "option pricing",
+  "monte carlo",
+  "heston",
+  "bates",
+  "stochastic volatility",
+  "jump diffusion",
+  "longstaff-schwartz",
+  "exotic options",
+  "quantitative finance",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business :: Financial :: Investment",
+  "Topic :: Scientific/Engineering :: Mathematics",
+]
 
 dependencies = [
   "numpy>=1.26,<3.0",
-  "pandas>=2.2,<3.0",
-  "scipy>=1.12,<2.0",
   "matplotlib>=3.8,<4.0",
   "quantlib>=1.41,<2.0",
   "pydantic>=2,<3",
-  "numba (>=0.64.0,<0.65.0)",
-  "line-profiler (>=5.0.2,<6.0.0)",
-  "memory-profiler (>=0.61.0,<0.62.0)"
+  "numba (>=0.64.0,<0.65.0)"
 ]
+
+[project.urls]
+Repository = "https://github.com/oscar12351235/option-pricer"
 
 [tool.poetry]
 packages = [{ include = "option_pricer", from = "src" }]
@@ -38,18 +61,16 @@ lint = [
   "ruff>=0.4,<1.0",
   "mypy>=1.10,<2.0"
 ]
-types = [
-  "scipy-stubs>=1.12,<2.0",
-  "pandas-stubs>=2.2,<3.0"
-]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["src/option_pricer/main.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["option_pricer", "config", "run"]
 
 [tool.black]
 line-length = 100
@@ -57,13 +78,14 @@ target-version = ["py312"]
 
 [tool.mypy]
 python_version = "3.12"
+files = ["src", "tests", "run.py", "config"]
 check_untyped_defs = true
 ignore_missing_imports = true
-exclude = "(^|/)src/option_pricer/main\\.py$"
 
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
+pythonpath = [".", "src"]
 addopts = [
   "--cov=src",
   "--cov-report=term-missing",
@@ -71,11 +93,7 @@ addopts = [
   "--junitxml=report.xml"
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
-
-[tool.coverage.run]
-omit = [
-  "src/option_pricer/main.py"
-]
+markers = ["slow: Monte Carlo benchmarks with large path counts (deselect with -m 'not slow')"]
 
 [tool.coverage.report]
 fail_under = 80
