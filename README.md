@@ -230,7 +230,7 @@ poetry run pytest                 # full suite with coverage (fails below 80%) a
 poetry run pytest -m "not slow"   # skip the large-path benchmarks
 poetry run ruff check .
 poetry run black --check .
-poetry run mypy src
+poetry run mypy                   # src/, tests/, run.py and config/
 poetry run pre-commit install     # run black, ruff and mypy on every commit
 ```
 
