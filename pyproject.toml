@@ -78,6 +78,7 @@ target-version = ["py312"]
 
 [tool.mypy]
 python_version = "3.12"
+files = ["src", "tests", "run.py", "config"]
 check_untyped_defs = true
 ignore_missing_imports = true
 

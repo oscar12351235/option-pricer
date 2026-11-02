@@ -43,7 +43,7 @@ jobs:
         run: poetry run black --check .
 
       - name: Mypy
-        run: poetry run mypy src
+        run: poetry run mypy
 
       # The full suite, slow benchmarks included, runs in well under a minute,
       # so the slow tests are not split off into a separate job.
