@@ -1,5 +1,7 @@
 # option-pricer
 
+[![CI](https://github.com/oscar12351235/option-pricer/actions/workflows/ci.yml/badge.svg)](https://github.com/oscar12351235/option-pricer/actions/workflows/ci.yml)
+
 Quant project scaffold (src layout + Poetry).
 
 ## Setup
