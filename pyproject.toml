@@ -46,7 +46,6 @@ types = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["src/option_pricer/main.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
@@ -59,7 +58,6 @@ target-version = ["py312"]
 python_version = "3.12"
 check_untyped_defs = true
 ignore_missing_imports = true
-exclude = "(^|/)src/option_pricer/main\\.py$"
 
 [tool.pytest.ini_options]
 minversion = "7.0"
@@ -71,11 +69,6 @@ addopts = [
   "--junitxml=report.xml"
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
-
-[tool.coverage.run]
-omit = [
-  "src/option_pricer/main.py"
-]
 
 [tool.coverage.report]
 fail_under = 80

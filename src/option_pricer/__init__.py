@@ -1,3 +1,5 @@
+"""Monte Carlo pricer for European and American exotic options under Heston and Bates."""
+
 from .config import MonteCarloConfig
 from .engine import MonteCarloEngine
 from .exercise import American, European
