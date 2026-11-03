@@ -133,6 +133,13 @@ graph_file=outputs/last_run_paths.png
 graph_elapsed_seconds=1.2571
 ```
 
+The plot shows 5,000 of the 100,000 simulated paths:
+
+![5,000 of 100,000 simulated Heston paths](docs/heston_paths.png)
+
+*5,000 of 100,000 simulated Heston paths without jumps (252 steps over one year), as written by
+the default run; regenerate with `uv run python run.py --plot-file docs/heston_paths.png`.*
+
 Every configuration field can be overridden on the command line (`uv run python run.py
 --help`), for example `--jump-kind lognormal` for Bates, `--exercise european`, `--no-plot`. In
 `run.py`, `payoff_kind = "vanilla"` and `"digital"` are written on the arithmetic average,
