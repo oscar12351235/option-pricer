@@ -10,7 +10,6 @@ build/
 # Virtual env
 .venv/
 venv/
-.poetry-cache/
 
 # Tooling
 .coverage
