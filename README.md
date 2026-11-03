@@ -14,7 +14,7 @@ options. Prices are validated against semi-analytic and lattice references (see
 ![Simulated Bates paths](docs/sample_paths.png)
 
 *200 of 2,000 simulated Bates paths (252 steps over one year), produced by `run.py`;
-regenerate with `poetry run python run.py --jump-kind lognormal --n-paths 2000 --plot
+regenerate with `uv run python run.py --jump-kind lognormal --n-paths 2000 --plot
 --plot-file docs/sample_paths.png --plot-max-paths 200`.*
 
 ## Models and methods
@@ -109,14 +109,13 @@ flowchart LR
 
 ## Quick start
 
-Requires Python 3.12 or 3.13 and Poetry 2.x (the project metadata uses the PEP 621 `[project]`
-table, which Poetry 1.x cannot read).
+Requires Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/oscar12351235/option-pricer.git
 cd option-pricer
-poetry install --with dev,lint
-poetry run python run.py
+uv sync
+uv run python run.py
 ```
 
 `run.py` reads `config/config.toml`. The committed configuration prices an American up-and-in
@@ -134,7 +133,7 @@ graph_file=outputs/last_run_paths.png
 graph_elapsed_seconds=1.2571
 ```
 
-Every configuration field can be overridden on the command line (`poetry run python run.py
+Every configuration field can be overridden on the command line (`uv run python run.py
 --help`), for example `--jump-kind lognormal` for Bates, `--exercise european`, `--no-plot`. In
 `run.py`, `payoff_kind = "vanilla"` and `"digital"` are written on the arithmetic average,
 `"asian_floating"` is the floating-strike Asian call, and `wrapper_kind` adds an up-and-in
@@ -193,7 +192,7 @@ QE time discretisation (Heston and Bates). The allowance comes from a separate r
 4 million paths, where the bias at 25, 50 and 100 steps was below 0.1% of the price and not
 statistically distinguishable from zero. The American put is allowed an extra 1% on the
 low side only. pytest prints the results in a "benchmark results" section. The figures below
-come from `poetry run pytest` on this commit and are identical on Python 3.12 and 3.13.
+come from `uv run pytest` on this commit and are identical on Python 3.12 and 3.13.
 
 | Benchmark | Reference | MC | SE | Error | \|Error\| / SE |
 |---|---:|---:|---:|---:|---:|
@@ -225,13 +224,13 @@ agree.
 ## Development
 
 ```bash
-poetry install --with dev,lint
-poetry run pytest                 # full suite with coverage (fails below 80%) and benchmark table
-poetry run pytest -m "not slow"   # skip the large-path benchmarks
-poetry run ruff check .
-poetry run black --check .
-poetry run mypy                   # src/, tests/, run.py and config/
-poetry run pre-commit install     # run black, ruff and mypy on every commit
+uv sync                       # create .venv with the locked dependencies, dev and lint tools
+uv run pytest                 # full suite with coverage (fails below 80%) and benchmark table
+uv run pytest -m "not slow"   # skip the large-path benchmarks
+uv run ruff check .
+uv run black --check .
+uv run mypy                   # src/, tests/, run.py and config/
+uv run pre-commit install     # run black, ruff and mypy on every commit
 ```
 
 The full suite takes a few seconds once Numba's compilation cache is warm, and about 30 s
