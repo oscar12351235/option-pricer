@@ -3,109 +3,19 @@
 [![CI](https://github.com/oscar12351235/option-pricer/actions/workflows/ci.yml/badge.svg)](https://github.com/oscar12351235/option-pricer/actions/workflows/ci.yml)
 
 `option-pricer` is a Monte Carlo pricer for European and American options, including
-path-dependent exotics, under the Heston stochastic-volatility model and its jump extension,
-the Bates model. Variance paths are simulated with Andersen's Quadratic-Exponential (QE) scheme
-in a parallel Numba kernel. Early exercise is handled by Longstaff–Schwartz regression. Products
-are built by combining *features* of the path (average, barrier hits, running extrema) with
-payoff classes that read them, so one engine prices vanilla, digital, Asian, barrier and lookback
-options. Prices are validated against semi-analytic and lattice references (see
+path-dependent exotics, under the Heston stochastic-volatility model and its jump extension, the
+Bates model. Paths are simulated with Andersen's Quadratic-Exponential (QE) scheme in a parallel
+Numba kernel, early exercise is handled by Longstaff–Schwartz regression, and products are
+assembled from path *features* (running average, barrier hits, running extrema) and payoffs that
+read them, so a single engine prices vanilla, digital, Asian, barrier and lookback options. The
+prices are checked against semi-analytic, series and lattice references (see
 [Validation](#validation)).
 
-![Simulated Bates paths](docs/sample_paths.png)
+![5,000 of 100,000 simulated Heston paths](docs/heston_paths.png)
 
-*200 of 2,000 simulated Bates paths (252 steps over one year), produced by `run.py`;
-regenerate with `uv run python run.py --jump-kind lognormal --n-paths 2000 --plot
---plot-file docs/sample_paths.png --plot-max-paths 200`.*
-
-## Models and methods
-
-**Heston with the Andersen QE scheme (Numba).** `NumbaHestonSampler` advances the CIR variance
-with the QE scheme of Andersen (2008): a moment-matched quadratic-Gaussian draw when
-ψ = s²/m² ≤ 1.5 and an exponential distribution with an atom at zero otherwise. The variance is
-therefore non-negative by construction, including when the Feller condition fails. The log-spot
-uses Andersen's central discretisation of the integrated variance (γ₁ = γ₂ = ½) with his
-martingale correction, so that E[S<sub>t+Δ</sub> | S<sub>t</sub>, V<sub>t</sub>] =
-S<sub>t</sub> e<sup>(r−q)Δ</sup> on every step. Paths are simulated in parallel over the path
-index with `numba.prange`.
-
-**Bates with lognormal jumps.** Passing `jump=LognormalJumps(lam, mu, sigma)` to the same sampler
-adds compound-Poisson jumps with log sizes J ~ N(μ<sub>J</sub>, σ<sub>J</sub>²) and intensity λ.
-The drift is compensated by λ(e<sup>μ<sub>J</sub> + σ<sub>J</sub>²/2</sup> − 1), so the
-discounted spot is a martingale. This is the convention of QuantLib's `BatesProcess`
-(λ, ν, δ) = (λ, μ<sub>J</sub>, σ<sub>J</sub>), checked numerically in the test suite.
-
-**Other models.** `VectorizedJumpGBMSampler` simulates Black–Scholes or the Merton (1976)
-jump-diffusion exactly on the grid. `HestonModel` wraps QuantLib's `HestonProcess` (QE with
-martingale correction) and term-structure handles; it serves as an independent cross-check.
-
-**Longstaff–Schwartz regression.** For any exercise policy other than European, the engine
-initialises each path's cash flow with the discounted payoff at maturity and steps backwards
-over the exercise dates. At each date it regresses the discounted future cash flows of the
-in-the-money paths on the basis
-
-  {1, x₁, …, x<sub>d</sub>, x₁², …, x<sub>d</sub>²},
-
-where x₁, …, x<sub>d</sub> are the state variables the payoff depends on at that date (no cross
-terms). For an American vanilla this is {1, S<sub>t</sub>, S<sub>t</sub>²}; for an up-and-in
-Asian call it is the running average and the knock-in indicator. A path exercises when its
-immediate value exceeds the fitted continuation value. The same paths are used for the
-regression and the valuation.
-
-**Antithetic variates.** With `antithetic=True` the engine draws normals for half of the paths
-and uses their negatives for the other half. The standard error is computed from the
-n/2 pair averages, because paired paths are not independent.
-
-**Common random numbers.** With `use_crn=True` the engine draws the normal tensor once, at
-construction, and reuses it for every simulation it runs. Two engines built with the same seed
-and grid see identical normals, which keeps the noise in differences between them small. The
-Numba sampler takes all of its randomness from this tensor: uniforms for the QE exponential
-branch and for the Poisson jump counts are obtained as Φ(z). As a result its output depends only
-on the seed, not on the number of threads. The GBM-jump sampler draws its jump counts from the
-generator, so repeated simulations within one engine share its diffusion normals and jump sizes
-but not its jump times.
-
-## Supported products
-
-| Exercise | Policy |
-|---|---|
-| European | maturity only |
-| American | every interior date of the simulation grid (a Bermudan approximation that converges as the grid is refined) |
-| Custom | any object with `exercise_time(timeindex, timegrid) -> bool`, e.g. a Bermudan schedule |
-
-| Product | Construction |
-|---|---|
-| Vanilla call/put | `Vanilla(key="terminal", k, side)` |
-| Digital (cash- or asset-or-nothing) | `Digital(key, k, side, cash, variant)` on any state key |
-| Asian, fixed strike | `Vanilla(key="average", ...)` with `AsianFeature` |
-| Asian, floating strike | `AsianFloatingVanilla(key1="terminal", key2="average", side)` |
-| Barrier knock-out / knock-in | `KnockOutAnyN(inner, keys)` (any of N barriers hit), `KnockInAllN(inner, keys)` (all N hit), `KnockInKnockOut(inner, ki_key, ko_key)`, with `BarrierFeature` |
-| Lookback | `Vanilla(key="max" or "min", ...)` (fixed strike) or `AsianFloatingVanilla(key1="terminal", key2="min", ...)` (floating strike), with `LookbackFeature` |
-
-Wrappers nest, so an American up-and-in Asian call is
-`KnockInAllN(Vanilla(key="average", k=100, side="call"), keys=["KI_flag"])` with an Asian and a
-barrier feature.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    C["MonteCarloConfig<br/>grid, paths, seed,<br/>CRN, antithetic"] --> E
-    M["Model<br/>spot, discount curve,<br/>PathSampler"] -->|paths| E
-    F["Features<br/>average, barrier flags,<br/>running max/min"] -->|state keys| E
-    P["Payoff<br/>reads state keys"] --> E
-    X["Exercise<br/>European / American / custom"] --> E
-    E["MonteCarloEngine<br/>European: discounted mean<br/>otherwise: Longstaff–Schwartz"] --> R["price, standard error"]
-```
-
-| Module | Role |
-|---|---|
-| `option_pricer/engine.py` | `MonteCarloEngine`. Asks the model for paths, passing a normal tensor to samplers that accept one (CRN, antithetics); computes the running value of every state key on every date; evaluates the payoff; averages (European) or runs Longstaff–Schwartz. Built-in payoffs and features are evaluated on whole arrays; user-defined ones go through a per-path fallback that calls `Feature.apply` and `Payoff.__call__`. |
-| `option_pricer/models/` | `Model` interface (spot, discount factor, path sampler) and the samplers: `NumbaHestonSampler` (Heston/Bates), `HestonModel` (QuantLib), `VectorizedJumpGBMSampler`, jump components. `BatesModel` pairs a sampler with flat-rate discounting; despite its name it is used with both the Numba Heston/Bates sampler and the GBM-jump sampler. |
-| `option_pricer/features/` | `AsianFeature`, `BarrierFeature`, `LookbackFeature`; each declares the state keys it `provides`. |
-| `option_pricer/payoffs/` | Payoffs that declare the keys they `require`, plus the knock-in/knock-out wrappers. The engine checks at construction that every required key is provided. |
-| `option_pricer/exercise.py` | `European`, `American` and the `Exercise` protocol. |
-| `option_pricer/config.py` | `MonteCarloConfig` (simulation settings). |
-| `run.py`, `config/` | Command-line entry point and its TOML configuration, validated by a pydantic `RunConfig`. |
+*5,000 of the 100,000 Heston paths (252 steps over one year) simulated by the default
+configuration, which writes this plot to `outputs/last_run_paths.png`. Regenerate it with
+`uv run python run.py --plot-file docs/heston_paths.png`.*
 
 ## Quick start
 
@@ -119,34 +29,38 @@ uv run python run.py
 ```
 
 `run.py` reads `config/config.toml`. The committed configuration prices an American up-and-in
-(barrier 120) fixed-strike Asian call, strike 100, under Heston with 100,000 antithetic paths and
-252 steps, and writes a path plot to `outputs/`. On an Apple-silicon laptop it printed:
+floating-strike Asian call under Heston: exercised at time t it pays (S<sub>t</sub> − A<sub>t</sub>)⁺,
+where A<sub>t</sub> is the running arithmetic average, provided the spot has reached the barrier
+120 by then. It uses 100,000 antithetic paths and 252 steps, and writes the plot shown above. On
+an Apple-silicon laptop it printed:
 
 ```text
 Option pricer run
-model=numba_heston exercise=american payoff=vanilla wrapper=knockin
+model=numba_heston exercise=american payoff=asian_floating wrapper=knockin
 n_paths=100000 n_steps=252 maturity=1.0 seed=739622
-price=4.1465646985
-stderr=0.0173743494
-elapsed_seconds=1.1451
+price=4.5231007988
+stderr=0.0184077771
+elapsed_seconds=1.2914
 graph_file=outputs/last_run_paths.png
-graph_elapsed_seconds=1.2571
+graph_elapsed_seconds=1.3343
 ```
 
-The plot shows 5,000 of the 100,000 simulated paths:
+Every setting in the file can be overridden on the command line, for example
+`uv run python run.py --jump-kind lognormal --exercise european --no-plot`
+(`--help` lists the flags):
 
-![5,000 of 100,000 simulated Heston paths](docs/heston_paths.png)
+| Setting | Values |
+|---|---|
+| `model_kind` | `numba_heston` (Numba QE sampler), `quantlib_heston` (QuantLib sampler), `gbm_jump` (Black–Scholes / Merton; `sigma` is then the volatility) |
+| `jump_kind` | `none` or `lognormal` (with `jump_lambda`, `jump_mu`, `jump_sigma`); `numba_heston` with jumps is the Bates model; ignored by `quantlib_heston` |
+| `exercise_kind` | `european`, `american` |
+| `payoff_kind` | `vanilla` (call on the average, strike `strike`), `digital` (digital call on the average, `digital_cash`, `digital_variant`), `asian_floating` (floating-strike Asian call) |
+| `wrapper_kind` | `none`, `knockin` (up-and-in at `barrier_ki`), `knockout` (down-and-out at `barrier_ko`), `kiko` (both) |
+| Simulation | `n_paths`, `n_steps`, `maturity`, `seed`, `use_crn`, `antithetic`, `plot` |
+| Market and model | `s0`, `strike`, `r`, `q`, `v0`, `kappa`, `theta`, `sigma`, `rho` |
 
-*5,000 of 100,000 simulated Heston paths without jumps (252 steps over one year), as written by
-the default run; regenerate with `uv run python run.py --plot-file docs/heston_paths.png`.*
-
-Every configuration field can be overridden on the command line (`uv run python run.py
---help`), for example `--jump-kind lognormal` for Bates, `--exercise european`, `--no-plot`. In
-`run.py`, `payoff_kind = "vanilla"` and `"digital"` are written on the arithmetic average,
-`"asian_floating"` is the floating-strike Asian call, and `wrapper_kind` adds an up-and-in
-(`barrier_ki`), down-and-out (`barrier_ko`) or knock-in/knock-out condition. For
-`model_kind = "gbm_jump"` the field `sigma` is the Black–Scholes volatility. Lookbacks and puts
-are available through the Python API.
+`run.py` exposes calls only; puts, lookbacks and other combinations are available through the
+Python API.
 
 ### Python API
 
@@ -191,15 +105,128 @@ European 7.7359 (SE 0.0377)
 American 7.8322 (SE 0.0308)
 ```
 
+## Models and methods
+
+Under the risk-neutral measure the spot S and variance V follow
+
+```math
+\frac{dS_t}{S_{t^-}} = (r - q - \lambda \bar{k})\,dt + \sqrt{V_t}\,dW^S_t + \left(e^{J} - 1\right) dN_t,
+\qquad
+dV_t = \kappa(\theta - V_t)\,dt + \sigma \sqrt{V_t}\,dW^V_t,
+```
+
+with d⟨W<sup>S</sup>, W<sup>V</sup>⟩<sub>t</sub> = ρ dt, N a Poisson process of intensity λ, log
+jump sizes J ~ N(μ<sub>J</sub>, σ<sub>J</sub>²) and compensator
+k̄ = e<sup>μ<sub>J</sub> + σ<sub>J</sub>²/2</sup> − 1. With λ = 0 this is the Heston model,
+otherwise the Bates model. The parameters (v₀, κ, θ, σ, ρ) are the constructor arguments
+`v0`, `kappa`, `theta`, `sigma`, `rho` of `NumbaHestonSampler`; σ is the volatility of variance.
+
+**Heston with the Andersen QE scheme (Numba).** `NumbaHestonSampler` advances the variance with
+the QE scheme of Andersen (2008): a moment-matched quadratic-Gaussian draw when
+ψ = s²/m² ≤ 1.5 and an exponential distribution with an atom at zero otherwise. The variance is
+therefore non-negative by construction, including when the Feller condition 2κθ ≥ σ² fails. The
+log-spot uses Andersen's central discretisation of the integrated variance (γ₁ = γ₂ = ½) with
+his martingale correction, so that E[S<sub>t+Δ</sub> | S<sub>t</sub>, V<sub>t</sub>] =
+S<sub>t</sub> e<sup>(r−q)Δ</sup> on every step. Paths are simulated in parallel over the path
+index with `numba.prange`.
+
+**Bates with lognormal jumps.** Passing `jump=LognormalJumps(lam, mu, sigma)` to the same sampler
+adds the compound-Poisson term above, with the drift compensated by λk̄ so that the discounted
+spot remains a martingale. This is the convention of QuantLib's `BatesProcess`:
+(λ, ν, δ) = (λ, μ<sub>J</sub>, σ<sub>J</sub>), which the test suite checks numerically.
+
+![200 of 2,000 simulated Bates paths](docs/sample_paths.png)
+
+*200 of 2,000 Bates paths with the parameters of `config/config.toml` and jumps
+λ = 0.3, μ<sub>J</sub> = −0.10, σ<sub>J</sub> = 0.25; the jumps appear as vertical moves.
+Regenerate with `uv run python run.py --jump-kind lognormal --n-paths 2000 --plot
+--plot-file docs/sample_paths.png --plot-max-paths 200`.*
+
+**Other models.** `VectorizedJumpGBMSampler` simulates Black–Scholes or the Merton (1976)
+jump-diffusion exactly on the grid. `HestonModel` wraps QuantLib's `HestonProcess` (QE with
+martingale correction) and its term-structure handles; it serves as an independent cross-check.
+
+**Longstaff–Schwartz regression.** For any exercise policy other than European, the engine
+initialises each path's cash flow with the discounted payoff at maturity and steps backwards over
+the exercise dates. At each date it regresses the discounted future cash flows of the
+in-the-money paths on the basis
+
+```math
+\{1,\; x_1, \dots, x_d,\; x_1^2, \dots, x_d^2\},
+```
+
+where x₁, …, x<sub>d</sub> are the state variables the payoff depends on at that date (no cross
+terms). For an American vanilla this is {1, S<sub>t</sub>, S<sub>t</sub>²}; for the up-and-in
+floating-strike Asian call above it is built from the spot, the running average and the
+knock-in indicator. A path exercises when its immediate value exceeds the fitted continuation
+value. The same paths are used for the regression and the valuation.
+
+**Antithetic variates.** With `antithetic=True` the engine draws normals for half of the paths
+and uses their negatives for the other half. The standard error is computed from the n/2 pair
+averages, because paired paths are not independent.
+
+**Common random numbers.** With `use_crn=True` the engine draws the normal tensor once, at
+construction, and reuses it for every simulation it runs. Two engines built with the same seed
+and grid see identical normals, which keeps the noise in differences between them small. The
+Numba sampler takes all of its randomness from this tensor: uniforms for the QE exponential
+branch and for the Poisson jump counts are obtained as Φ(z). Its output therefore depends only on
+the seed, not on the number of threads. The GBM-jump sampler draws its jump counts from the
+generator, so repeated simulations within one engine share its diffusion normals and jump sizes
+but not its jump times.
+
+## Supported products
+
+| Exercise | Policy |
+|---|---|
+| European | maturity only |
+| American | every interior date of the simulation grid (a Bermudan approximation that converges as the grid is refined) |
+| Custom | any object with `exercise_time(timeindex, timegrid) -> bool`, e.g. a Bermudan schedule |
+
+| Product | Construction |
+|---|---|
+| Vanilla call/put | `Vanilla(key="terminal", k, side)` |
+| Digital (cash- or asset-or-nothing) | `Digital(key, k, side, cash, variant)` on any state key |
+| Asian, fixed strike | `Vanilla(key="average", ...)` with `AsianFeature` |
+| Asian, floating strike | `AsianFloatingVanilla(key1="terminal", key2="average", side)` |
+| Barrier knock-out / knock-in | `KnockOutAnyN(inner, keys)` (any of N barriers hit), `KnockInAllN(inner, keys)` (all N hit), `KnockInKnockOut(inner, ki_key, ko_key)`, with `BarrierFeature` |
+| Lookback | `Vanilla(key="max" or "min", ...)` (fixed strike) or `AsianFloatingVanilla(key1="terminal", key2="min", ...)` (floating strike), with `LookbackFeature` |
+
+Wrappers nest: the default `run.py` product is
+`KnockInAllN(AsianFloatingVanilla(key1="terminal", key2="average", side="call"), keys=["KI_flag"])`
+with an Asian and a barrier feature.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    C["MonteCarloConfig<br/>grid, paths, seed,<br/>CRN, antithetic"] --> E
+    M["Model<br/>spot, discount curve,<br/>PathSampler"] -->|paths| E
+    F["Features<br/>average, barrier flags,<br/>running max/min"] -->|state keys| E
+    P["Payoff<br/>reads state keys"] --> E
+    X["Exercise<br/>European / American / custom"] --> E
+    E["MonteCarloEngine<br/>European: discounted mean<br/>otherwise: Longstaff–Schwartz"] --> R["price, standard error"]
+```
+
+| Path | Role |
+|---|---|
+| `src/option_pricer/engine.py` | `MonteCarloEngine`. Asks the model for paths, passing a normal tensor to samplers that accept one (CRN, antithetics); computes the running value of every state key on every date; evaluates the payoff; averages (European) or runs Longstaff–Schwartz. Built-in payoffs and features are evaluated on whole arrays; user-defined ones go through a per-path fallback that calls `Feature.apply` and `Payoff.__call__`. |
+| `src/option_pricer/models/` | `Model` interface (spot, discount factor, path sampler) and the samplers: `NumbaHestonSampler` (Heston/Bates), `HestonModel` (QuantLib), `VectorizedJumpGBMSampler`, and the jump components. `BatesModel` pairs a sampler with flat-rate discounting; despite its name it is used with both the Numba Heston/Bates sampler and the GBM-jump sampler. |
+| `src/option_pricer/features/` | `AsianFeature`, `BarrierFeature`, `LookbackFeature`; each declares the state keys it `provides`. |
+| `src/option_pricer/payoffs/` | Payoffs that declare the keys they `require`, plus the knock-in/knock-out wrappers. The engine checks at construction that every required key is provided. |
+| `src/option_pricer/exercise.py` | `European`, `American` and the `Exercise` protocol. |
+| `src/option_pricer/config.py` | `MonteCarloConfig` (simulation settings). |
+| `run.py`, `config/` | Command-line entry point and its TOML configuration, validated by a pydantic `RunConfig`. |
+| `tests/` | Unit and behavioural tests, and the reference-price benchmarks in `test_benchmarks.py`. |
+
 ## Validation
 
-`tests/test_benchmarks.py` compares Monte Carlo prices with independent references. A Monte Carlo
-estimate passes if its error is within three standard errors, plus 0.1% of the price for the
-QE time discretisation (Heston and Bates). The allowance comes from a separate run with
-4 million paths, where the bias at 25, 50 and 100 steps was below 0.1% of the price and not
-statistically distinguishable from zero. The American put is allowed an extra 1% on the
-low side only. pytest prints the results in a "benchmark results" section. The figures below
-come from `uv run pytest` on this commit and are identical on Python 3.12 and 3.13.
+`tests/test_benchmarks.py` compares Monte Carlo prices with independent references. An estimate
+passes if its error is within three standard errors, plus 0.1% of the price for the QE time
+discretisation (Heston and Bates). That allowance comes from a separate run with 4 million
+paths, in which the bias at 25, 50 and 100 steps was below 0.1% of the price and not
+statistically distinguishable from zero. The American put is allowed an extra 1% on the low side
+only. pytest prints the results in a "benchmark results" section; the figures below come from
+`uv run pytest` on the current version and are identical on Python 3.12 and 3.13.
 
 | Benchmark | Reference | MC | SE | Error | \|Error\| / SE |
 |---|---:|---:|---:|---:|---:|
@@ -212,21 +239,21 @@ come from `uv run pytest` on this commit and are identical on Python 3.12 and 3.
 
 Settings:
 
-- Heston and Bates: S₀ = K = 100, T = 1, r = 3%, q = 1%, v₀ = θ = 0.04, κ = 1.5, σ = 0.5,
-  ρ = −0.7. These violate the Feller condition (2κθ = 0.12 < σ² = 0.25). Jumps: λ = 0.4,
-  μ<sub>J</sub> = −0.12, σ<sub>J</sub> = 0.18. Prices use 200,000 antithetic paths and
-  100 steps; the martingale checks use 100,000 paths and 50 steps.
+- Heston and Bates: S₀ = K = 100, T = 1, r = 3%, q = 1%, v₀ = θ = 0.04, κ = 1.5, volatility of
+  variance σ = 0.5, ρ = −0.7. These violate the Feller condition (2κθ = 0.12 < σ² = 0.25).
+  Jumps: λ = 0.4, μ<sub>J</sub> = −0.12, σ<sub>J</sub> = 0.18. Prices use 200,000 antithetic
+  paths and 100 steps; the martingale checks use 100,000 paths and 50 steps.
 - Merton: the same jumps with diffusion volatility 20%, 200,000 paths, exact simulation.
-- American put: S₀ = 36, K = 40, r = 6%, σ = 20%, T = 1 (the first case of Longstaff and
+- American put: S₀ = 36, K = 40, r = 6%, volatility 20%, T = 1 (the first case of Longstaff and
   Schwartz, 2001, Table 1), 100,000 antithetic paths, 50 exercise dates. The CRR tree exercises
-  continuously, while LSM uses 50 dates and a regression-based policy, so a small negative
-  error is expected. The test also checks that the American price exceeds the European one.
+  continuously, while LSM uses 50 dates and a regression-based policy, so a small negative error
+  is expected. The test also checks that the American price exceeds the European one.
 
-The suite also checks that QuantLib's Bates engine with vanishing vol-of-variance reproduces
-the Merton series (confirming the jump convention), that a single QE step reproduces the exact
-CIR conditional mean and variance in both branches, that the Numba kernel is reproducible and
-independent of the thread count, and that the vectorised and per-path engine implementations
-agree.
+The suite also checks that QuantLib's Bates engine with vanishing volatility of variance
+reproduces the Merton series (confirming the jump convention), that a single QE step reproduces
+the exact conditional mean and variance of V in both branches, that the Numba kernel is
+reproducible and independent of the thread count, and that the vectorised and per-path engine
+implementations agree.
 
 ## Development
 
@@ -240,9 +267,8 @@ uv run mypy                   # src/, tests/, run.py and config/
 uv run pre-commit install     # run black, ruff and mypy on every commit
 ```
 
-The full suite takes a few seconds once Numba's compilation cache is warm, and about 30 s
-from a cold cache. Line coverage of `src/` is currently 100%. CI runs all of the above on
-Python 3.12 and 3.13.
+The full suite takes a few seconds once Numba's compilation cache is warm, and about 30 s from a
+cold cache. Line coverage of `src/` is 100%. CI runs all of the above on Python 3.12 and 3.13.
 
 ## Limitations
 
@@ -260,7 +286,7 @@ Python 3.12 and 3.13.
   structures, and it supports neither CRN nor antithetic variates.
 - **Memory.** The engine materialises the full normal tensor
   (n<sub>steps</sub> × n<sub>paths</sub> × n<sub>factors</sub>) and the path matrix. The default
-  `run.py` configuration peaked at about 1.4 GB of resident memory.
+  `run.py` configuration peaks at about 1.4 GB of resident memory.
 - **Per-path fallback is slow.** User-defined payoffs or features run in a Python loop over
   paths and exercise dates.
 
@@ -281,4 +307,4 @@ Python 3.12 and 3.13.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT © 2026 Oscar Bonnet. See [LICENSE](LICENSE).
