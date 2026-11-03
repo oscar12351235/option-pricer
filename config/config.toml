@@ -1,10 +1,10 @@
 [run]
 model_kind = "numba_heston"
 exercise_kind = "american"
-payoff_kind = "vanilla"
+payoff_kind = "asian_floating"
 wrapper_kind = "knockin"
 digital_variant = "cash"
-jump_kind = "none"
+#jump_kind = "lognormal"
 plot = true
 n_paths = 100_000
 n_steps = 252
